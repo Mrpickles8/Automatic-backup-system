@@ -1,20 +1,20 @@
 terraform {
-  terraform {
-    required_version = "1.16.5"
-    cloud {
-      organization = "Dominionorg"
-      workspaces {
-        name = "automatic-backup-system"
-      }
-    }
-  }
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+  required_version = "1.16.5"
+  cloud {
+    organization = "Dominionorg"
+    workspaces {
+      name = "automatic-backup-system"
     }
   }
 }
+
+required_providers {
+  aws = {
+    source  = "hashicorp/aws"
+    version = "~> 5.0"
+  }
+}
+
 
 provider "aws" {
   region = var.aws_region
