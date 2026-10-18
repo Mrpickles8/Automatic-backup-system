@@ -1,8 +1,10 @@
 variable "aws_region" {
+  type    = default
   default = "eu-west-1"
 }
 
 variable "project_name" {
+  type    = default
   default = "backup-system"
 }
 
