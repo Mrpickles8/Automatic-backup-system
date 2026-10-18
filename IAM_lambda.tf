@@ -22,6 +22,28 @@ resource "aws_iam_role_policy" "lambda_policy" {
     Version = "2012-10-17"
 
     Statement = [
+      # Lire et lister les fichiers du bucket source
+      {
+        Effect = "Allow"
+
+        Action = [
+          "s3:ListBucket"
+        ]
+
+        Resource = aws_s3_bucket.source.arn
+      },
+
+      {
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject"
+        ]
+
+        Resource = "${aws_s3_bucket.source.arn}/*"
+      },
+
+      # Écrire les fichiers dans les buckets de sauvegarde
       {
         Effect = "Allow"
 
@@ -38,6 +60,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
         ]
       },
 
+      # Lister les buckets de sauvegarde
       {
         Effect = "Allow"
 
@@ -53,6 +76,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
         ]
       },
 
+      # Écrire les logs CloudWatch
       {
         Effect = "Allow"
 
@@ -67,5 +91,3 @@ resource "aws_iam_role_policy" "lambda_policy" {
     ]
   })
 }
-
-
