@@ -1,10 +1,10 @@
 variable "aws_region" {
-  type    = default
+  type    = string
   default = "eu-west-1"
 }
 
 variable "project_name" {
-  type    = default
+  type    = string
   default = "backup-system"
 }
 
