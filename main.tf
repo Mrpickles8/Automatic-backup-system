@@ -62,6 +62,18 @@ resource "aws_s3_bucket_versioning" "backup" {
   }
 }
 
+resource "aws_s3_bucket_object_lock_configuration" "backup" {
+  for_each = var.buckets
+  bucket   = aws_s3_bucket.backup[each.key].id
+
+  rule {
+    default_retention {
+      mode = "COMPLIANCE"
+      days = 5
+    }
+  }
+}
+
 #we create the kms key
 resource "aws_kms_key" "backup" {
   description             = "kms key encryption for backup"

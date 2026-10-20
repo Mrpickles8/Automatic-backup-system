@@ -1,3 +1,4 @@
+
 name: Terraform CI/CD
 
 on:
@@ -28,7 +29,6 @@ permissions:
   contents: read
 
 jobs:
-
   terraform-security:
     name: Security & Quality
     runs-on: ubuntu-latest
@@ -49,7 +49,7 @@ jobs:
         run: tflint
 
       - name: Checkov security scan
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@v12
         with:
           directory: .
           framework: terraform
@@ -59,7 +59,11 @@ jobs:
     name: Validate, Cost & Plan
     runs-on: ubuntu-latest
     needs: terraform-security
-    if: github.event_name != 'workflow_dispatch' || inputs.action == 'deploy'
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.action == 'deploy')
 
     steps:
       - name: Checkout
@@ -82,13 +86,17 @@ jobs:
         run: terraform init
 
       - name: Terraform Format Check
-        run: terraform fmt -check 
+        run: terraform fmt -check -recursive
 
       - name: Terraform Validate
         run: terraform validate
 
       - name: Terraform Plan
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' ||
+          github.event_name == 'workflow_dispatch'
+        env:
+          TF_VAR_notification_email: ${{ secrets.NOTIFICATION_EMAIL }}
         run: terraform plan -no-color
 
       - name: Setup Infracost
@@ -98,31 +106,40 @@ jobs:
         env:
           INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
         run: |
-          infracost breakdown --path . \
+          infracost breakdown \
+            --path . \
             --format table \
             --out-file infracost.txt
+
           cat infracost.txt
 
-
   approval:
-    name: Manual Approval
+    name: Production Approval
     runs-on: ubuntu-latest
     needs: terraform-validate
     if: >-
-      github.ref == 'refs/heads/main' && github.event_name == 'push' 
+      (github.event_name == 'push' &&
+       github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main' &&
+       inputs.action == 'deploy')
+
     environment: production
 
     steps:
       - name: Approval confirmed
         run: echo "Production approval granted. Ready to deploy."
 
-
   terraform-deploy:
     name: Deploy to AWS
     runs-on: ubuntu-latest
     needs: approval
-    if:
-      github.ref == 'refs/heads/main' && github.event_name == 'push' 
+    if: >-
+      (github.event_name == 'push' &&
+       github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main' &&
+       inputs.action == 'deploy')
 
     steps:
       - name: Checkout
@@ -149,21 +166,15 @@ jobs:
           TF_VAR_notification_email: ${{ secrets.NOTIFICATION_EMAIL }}
         run: terraform apply -auto-approve
 
-
   terraform-test-backup:
     name: Post-Deploy Tests
     runs-on: ubuntu-latest
     needs: terraform-deploy
+    if: needs.terraform-deploy.result == 'success'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -172,74 +183,86 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform Init
-        run: terraform init
-
-      # Test 1 : Les 4 buckets S3 existent
       - name: Verify S3 buckets
         shell: bash
         run: |
-          for TYPE in documents database media logs; do
-            BUCKET=$(aws s3 ls | awk '{print $3}' | grep -E "^backup-system-${TYPE}($|-)" || true)
+          set -euo pipefail
 
-            if [ -z "$BUCKET" ]; then
-              echo "Bucket $TYPE not found"
+          for TYPE in documents database media logs; do
+            mapfile -t BUCKETS < <(
+              aws s3api list-buckets \
+                --query "Buckets[?starts_with(Name, 'backup-system-${TYPE}')].Name" \
+                --output text |
+              tr '\t' '\n' |
+              grep -E "^backup-system-${TYPE}(-|$)" || true
+            )
+
+            if [ "${#BUCKETS[@]}" -eq 0 ]; then
+              echo "::error::Bucket for ${TYPE} not found"
               exit 1
             fi
 
-            echo "Bucket $TYPE exists: $BUCKET"
+            for BUCKET in "${BUCKETS[@]}"; do
+              echo "Bucket ${TYPE} exists: ${BUCKET}"
+            done
           done
 
-      # Test 2 : Versioning activé sur tous les buckets concernés
       - name: Verify versioning enabled
         shell: bash
         run: |
-          for TYPE in documents database media logs; do
-            BUCKET=$(aws s3 ls | awk '{print $3}' | grep -E "^backup-system-${TYPE}($|-)" || true)
+          set -euo pipefail
 
-            if [ -z "$BUCKET" ]; then
-              echo "Bucket for $TYPE not found"
+          for TYPE in documents database media logs; do
+            mapfile -t BUCKETS < <(
+              aws s3api list-buckets \
+                --query "Buckets[?starts_with(Name, 'backup-system-${TYPE}')].Name" \
+                --output text |
+              tr '\t' '\n' |
+              grep -E "^backup-system-${TYPE}(-|$)" || true
+            )
+
+            if [ "${#BUCKETS[@]}" -eq 0 ]; then
+              echo "::error::Bucket for ${TYPE} not found"
               exit 1
             fi
 
-            while IFS= read -r BUCKET_NAME; do
-              [ -z "$BUCKET_NAME" ] && continue
-
+            for BUCKET in "${BUCKETS[@]}"; do
               STATUS=$(aws s3api get-bucket-versioning \
-                --bucket "$BUCKET_NAME" \
+                --bucket "$BUCKET" \
                 --query 'Status' \
                 --output text)
 
               if [ "$STATUS" != "Enabled" ]; then
-                echo "Versioning not enabled on $BUCKET_NAME"
+                echo "::error::Versioning not enabled on ${BUCKET}"
                 exit 1
               fi
 
-              echo "Versioning enabled on $BUCKET_NAME"
-            done <<< "$BUCKET"
+              echo "Versioning enabled on ${BUCKET}"
+            done
           done
 
-      # Test 3 : Invocation Lambda backup
       - name: Test backup Lambda
         shell: bash
         run: |
+          set -euo pipefail
+
           aws lambda invoke \
             --function-name backup-system-backup-processor \
             --region "$AWS_REGION" \
             --payload '{}' \
             --cli-binary-format raw-in-base64-out \
-            response.json
+            response.json > invoke-metadata.json
 
+          cat invoke-metadata.json
           cat response.json
 
-          if grep -q '"errorMessage"' response.json; then
-            echo "Backup Lambda execution failed"
+          if jq -e '.FunctionError' invoke-metadata.json >/dev/null; then
+            echo "::error::Backup Lambda execution failed"
             exit 1
           fi
 
-          echo "Backup Lambda test passed"
+          echo "Lambda invocation completed without a reported function error"
 
-  
   terraform-destroy:
     name: Destroy Infrastructure
     runs-on: ubuntu-latest
@@ -270,7 +293,12 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
+      - name: Terraform Destroy Plan
+        env:
+          TF_VAR_notification_email: ${{ secrets.NOTIFICATION_EMAIL }}
+        run: terraform plan -destroy -out=destroy.tfplan
+
       - name: Terraform Destroy
         env:
           TF_VAR_notification_email: ${{ secrets.NOTIFICATION_EMAIL }}
-        run: terraform destroy -auto-approve
+        run: terraform apply -auto-approve destroy.tfplan
