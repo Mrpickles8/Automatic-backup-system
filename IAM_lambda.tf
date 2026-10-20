@@ -74,8 +74,8 @@ resource "aws_iam_policy" "Boundary_cost" {
 }
 
 resource "aws_iam_role" "lambda_role" {
-  name                = "${var.project_name}-backup-lambda-role"
-  boundary_permission = aws_iam_policy.Boundary_cost.arn
+  name                 = "${var.project_name}-backup-lambda-role"
+  permissions_boundary = aws_iam_policy.Boundary_cost.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
