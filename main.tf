@@ -74,7 +74,7 @@ resource "aws_s3_bucket_object_lock_configuration" "backup" {
   }
   depends_on = [
     aws_s3_bucket_versioning.backup
-    ]
+  ]
 }
 
 #we create the kms key
